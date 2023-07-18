@@ -1,73 +1,117 @@
-name: Continuous Integration
+name: CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - '*'
+  pull_request:
+    branches:
+      - main
+      - master
 
 jobs:
-  ci:
+  build:
+    name: Build
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        name:
-          - ubuntu-latest-stable
-          - ubuntu-latest-nightly
-          - windows-latest-stable
-          - windows-latest-nightly
+        os: [ubuntu-20.04, windows-2019]
+        sourcemod-version: [1.11-dev]
+        python-version: ['3.10']
         include:
-          - name: ubuntu-latest-stable
-            os: ubuntu-latest
-            rust: stable
-            target: i686-unknown-linux-gnu
-            rustflags: -D warnings
-          - name: ubuntu-latest-nightly
-            os: ubuntu-latest
-            rust: nightly
-            target: i686-unknown-linux-gnu
-            rustflags: -D warnings
-          - name: windows-latest-stable
-            os: windows-latest
-            rust: stable
-            target: i686-pc-windows-msvc
-            rustflags: -D warnings -C target-feature=+crt-static
-          - name: windows-latest-nightly
-            os: windows-latest
-            rust: nightly
-            target: i686-pc-windows-msvc
-            rustflags: -D warnings -C target-feature=+crt-static
+          - os: ubuntu-20.04
+            sdks: css,csgo
+          - os: windows-2019
+            sdks: csgo
 
     steps:
-      - uses: actions/checkout@v2
-        
-      - name: Install 32-bit support
+      - name: Install Linux packages
         if: runner.os == 'Linux'
         run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y g++-multilib
+          sudo apt update
+          sudo apt install -yq --no-install-recommends g++-multilib
 
-      - uses: actions-rs/toolchain@v1
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          profile: minimal
-          toolchain: ${{ matrix.rust }}
-          target: ${{ matrix.target }}
-          override: true
-          components: rustfmt, clippy
+          python-version: ${{ matrix.python-version }}
 
-      - uses: actions-rs/cargo@v1
+      - name: Checkout
+        uses: actions/checkout@v3
         with:
-          command: build
-          args: --all --all-targets --target=${{ matrix.target }}
+          path: extension
+
+      - name: Checkout SourceMod
+        uses: actions/checkout@v3
+        with:
+          repository: alliedmodders/sourcemod
+          ref: ${{ matrix.sourcemod-version }}
+          path: sourcemod
+          submodules: recursive
+
+      - name: Install AMBuild
+        run: |
+          python -m pip install wheel
+          pip install git+https://github.com/alliedmodders/ambuild
+
+      - name: Install sourcemod dependencies
+        run: |
+          bash sourcemod/tools/checkout-deps.sh -m -s ${{ matrix.sdks }}
+
+      - name: Build
+        working-directory: extension
+        shell: bash
         env:
-          RUSTFLAGS: ${{ matrix.rustflags }}
+          BREAKPAD_SYMBOL_SERVER: ${{ secrets.BREAKPAD_SYMBOL_SERVER }}
+        run: |
+          mkdir build && cd build
+          python ../configure.py --enable-optimize --symbol-files --sdks=${{ matrix.sdks }}
+          ambuild
 
-      - uses: actions-rs/cargo@v1
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
         with:
-          command: fmt
-          args: --all -- --check
+          name: ${{ runner.os }}
+          path: extension/build/package
 
-      - uses: actions-rs/cargo@v1
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Package
+        run: |
+          version=`echo $GITHUB_REF | sed "s/refs\/tags\///"`
+          ls -Rall
+          if [ -d "./Linux/" ]; then
+            cd ./Linux/
+            tar -czf ../${{ github.event.repository.name }}-${version}-linux.tar.gz -T <(\ls -1)
+            cd -
+          fi
+          if [ -d "./macOS/" ]; then
+            cd ./macOS/
+            tar -czf ../${{ github.event.repository.name }}-${version}-mac.tar.gz -T <(\ls -1)
+            cd -
+          fi
+          if [ -d "./Windows/" ]; then
+            cd ./Windows/
+            tar -czf ../${{ github.event.repository.name }}-${version}-windows.tar.gz -T <(\ls -1)
+            cd -
+          fi
+
+      - name: Release
+        uses: svenstaro/upload-release-action@v2
         with:
-          command: clippy
-          args: --all --all-targets --target=${{ matrix.target }} -- -D warnings
-        env:
-          RUSTFLAGS: ${{ matrix.rustflags }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: '*.tar.gz'
+          tag: ${{ github.ref }}
+          file_glob: true
