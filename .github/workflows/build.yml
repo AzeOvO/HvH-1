@@ -1,16 +1,13 @@
-name: build
+name: CI
 
 on:
   push:
-    branches:
-      - main
-      - master
-    tags:
-      - '*'
+    branches: master
+    tags-ignore: 
+      - Release*
+      - Deploy*
   pull_request:
-    branches:
-      - main
-      - master
+    branches: '*'
 
 jobs:
   build:
@@ -19,14 +16,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, windows-2019]
-        sourcemod-version: [1.11-dev]
-        python-version: ['3.10']
+        os: [ubuntu-latest, windows-latest]
+        sourcemod-version: [1.10-dev]
         include:
-          - os: ubuntu-20.04
-            sdks: css,csgo
-          - os: windows-2019
-            sdks: csgo
+          - os: ubuntu-latest
+            target-archs: x86
+
+          - os: windows-latest
+            target-archs: x86
 
     steps:
       - name: Install Linux packages
@@ -35,83 +32,37 @@ jobs:
           sudo apt update
           sudo apt install -yq --no-install-recommends g++-multilib
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v2
         with:
-          path: extension
+          submodules: recursive
+      
+      - name: Checkout MetaMod
+        uses: actions/checkout@v2
+        with:
+            repository: alliedmodders/metamod-source
+            path: metamod-source
+            submodules: recursive
 
       - name: Checkout SourceMod
-        uses: actions/checkout@v3
+        uses: actions/checkout@v2
         with:
           repository: alliedmodders/sourcemod
           ref: ${{ matrix.sourcemod-version }}
           path: sourcemod
           submodules: recursive
 
-      - name: Install AMBuild
-        run: |
-          python -m pip install wheel
-          pip install git+https://github.com/alliedmodders/ambuild
-
-      - name: Install sourcemod dependencies
-        run: |
-          bash sourcemod/tools/checkout-deps.sh -m -s ${{ matrix.sdks }}
 
       - name: Build
-        working-directory: extension
-        shell: bash
-        env:
-          BREAKPAD_SYMBOL_SERVER: ${{ secrets.BREAKPAD_SYMBOL_SERVER }}
         run: |
-          mkdir build && cd build
-          python ../configure.py --enable-optimize --symbol-files --sdks=${{ matrix.sdks }}
-          ambuild
-
+            mkdir build; cd build;
+            cmake -DUSE_SDK=OFF -DTARGET_ARCH=x86 -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release ../
+            cmake --build . --config Release -j 8
+            
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ runner.os }}
-          path: extension/build/package
-
-  release:
-    name: Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v3
-
-      - name: Package
-        run: |
-          version=`echo $GITHUB_REF | sed "s/refs\/tags\///"`
-          ls -Rall
-          if [ -d "./Linux/" ]; then
-            cd ./Linux/
-            tar -czf ../${{ github.event.repository.name }}-${version}-linux.tar.gz -T <(\ls -1)
-            cd -
-          fi
-          if [ -d "./macOS/" ]; then
-            cd ./macOS/
-            tar -czf ../${{ github.event.repository.name }}-${version}-mac.tar.gz -T <(\ls -1)
-            cd -
-          fi
-          if [ -d "./Windows/" ]; then
-            cd ./Windows/
-            tar -czf ../${{ github.event.repository.name }}-${version}-windows.tar.gz -T <(\ls -1)
-            cd -
-          fi
-
-      - name: Release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: '*.tar.gz'
-          tag: ${{ github.ref }}
-          file_glob: true
+          name: Build
+          path: |
+            **/*.ext.dll
+            **/*.ext.so
