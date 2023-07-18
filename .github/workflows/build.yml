@@ -1,106 +1,73 @@
-name: Build
+name: Continuous Integration
 
-on:
-  push:
-    branches: [ master ]
+on: [push, pull_request]
 
 jobs:
-  build:
-
-    name: Build on ${{ matrix.os_short }}
+  ci:
     runs-on: ${{ matrix.os }}
-
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-20.04
-          - windows-latest
+        name:
+          - ubuntu-latest-stable
+          - ubuntu-latest-nightly
+          - windows-latest-stable
+          - windows-latest-nightly
         include:
-          - os: ubuntu-20.04
-            os_short: linux
-          - os: windows-latest
-            os_short: windows
+          - name: ubuntu-latest-stable
+            os: ubuntu-latest
+            rust: stable
+            target: i686-unknown-linux-gnu
+            rustflags: -D warnings
+          - name: ubuntu-latest-nightly
+            os: ubuntu-latest
+            rust: nightly
+            target: i686-unknown-linux-gnu
+            rustflags: -D warnings
+          - name: windows-latest-stable
+            os: windows-latest
+            rust: stable
+            target: i686-pc-windows-msvc
+            rustflags: -D warnings -C target-feature=+crt-static
+          - name: windows-latest-nightly
+            os: windows-latest
+            rust: nightly
+            target: i686-pc-windows-msvc
+            rustflags: -D warnings -C target-feature=+crt-static
 
     steps:
-
-      - name: Setup Python 3.9
-        uses: actions/setup-python@v3
-        with:
-          python-version: 3.9
-
-      - name: Install AMBuild
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install git+https://github.com/alliedmodders/ambuild
-
-      - name: Install dependencies (Linux)
+      - uses: actions/checkout@v2
+        
+      - name: Install 32-bit support
         if: runner.os == 'Linux'
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib g++-multilib llvm-10 clang-10
+          sudo apt-get install -y g++-multilib
 
-      - name: Select clang compiler (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CXX=clang++" >> $GITHUB_ENV
-          clang --version
-          clang++ --version
-
-      - name: Find Visual C++ compilers and make all environment variables global (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: |
-          :: See https://github.com/microsoft/vswhere/wiki/Find-VC
-          for /f "usebackq delims=*" %%i in (`vswhere -latest -property installationPath`) do (
-            call "%%i"\Common7\Tools\vsdevcmd.bat -arch=x86 -host_arch=x64
-          )
-
-          :: Loop over all environment variables and make them global.
-          for /f "delims== tokens=1,2" %%a in ('set') do (
-            echo>>"%GITHUB_ENV%" %%a=%%b
-          )
-
-      - name: Checkout MetaMod
-        uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
         with:
-            repository: alliedmodders/metamod-source
-            ref: 1.11-dev
-            path: metamod-source
-            submodules: recursive
+          profile: minimal
+          toolchain: ${{ matrix.rust }}
+          target: ${{ matrix.target }}
+          override: true
+          components: rustfmt, clippy
 
-      - name: Checkout SourceMod
-        uses: actions/checkout@v3
+      - uses: actions-rs/cargo@v1
         with:
-          repository: alliedmodders/sourcemod
-          ref: 1.11-dev
-          path: sourcemod
-          submodules: recursive
+          command: build
+          args: --all --all-targets --target=${{ matrix.target }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
 
-      - name: Checkout hl2sdk-csgo
-        uses: actions/checkout@v3
+      - uses: actions-rs/cargo@v1
         with:
-          repository: Wend4r/hl2sdk
-          ref: csgo
-          path: hl2sdk-csgo
+          command: fmt
+          args: --all -- --check
 
-      - name: Checkout Project
-        uses: actions/checkout@v3
+      - uses: actions-rs/cargo@v1
         with:
-          path: extension
-
-      - name: Build
-        working-directory: extension
-        shell: bash
-        run: |
-          mkdir build && cd build
-          python ../configure.py --enable-optimize --sdks=csgo
-          ambuild
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: ${{ runner.os }}
-          path: extension/build/package
+          command: clippy
+          args: --all --all-targets --target=${{ matrix.target }} -- -D warnings
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
